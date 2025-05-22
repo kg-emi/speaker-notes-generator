@@ -1,5 +1,3 @@
-# --- START OF FILE main.py ---
-
 import os
 import logging
 import re # Import regex for parsing
@@ -478,7 +476,7 @@ def handle_briefing_method_change(state, payload):
     if payload == "Upload File":
         state["briefing_manual_text"] = ""
     else: # Enter Text
-        state["briefing_files"] = []
+        state["briefing_files"] = []  # Clear file list when entering text
     _update_generate_button_state(state)
 
 # --- New Handlers for Saving Text Input ---
@@ -688,5 +686,3 @@ def handle_download_mapping(state):
 
 def handle_download_notes(state):
     _download_content_as_docx(state, "speaker_notes")
-
-# --- END OF FILE main.py ---
