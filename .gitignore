@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+
+# Python environment files
+*.env
+*.venv
+
+# Logs and local data
+*.log
+*.sqlite3
+
+# macOS and Windows junk files
+.DS_Store
+Thumbs.db
+
+# Ignore data folder
+data/

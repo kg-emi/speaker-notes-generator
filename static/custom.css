@@ -1,0 +1,18 @@
+.description {
+    font-style: italic;
+    color: #666;
+}
+
+.list {
+    list-style-type: disc;
+    margin-left: 20px;
+}
+
+.summary {
+    font-weight: bold;
+}
+
+.category {
+    font-weight: bold;
+    margin-top: 10px;
+}
