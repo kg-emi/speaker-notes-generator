@@ -1,19 +1,40 @@
 import os
 import logging
-import re # Import regex for parsing
-import time # Import time for temporary filenames
-import io # Import io for in-memory streams
+import re
+import time
+import io
 import writer as wf
 import writer.ai
 import pandas as pd
-from typing import Literal, Any # Added Any for type hint
+from typing import Literal, Any
 from prompts import (
-    OUTLINE_PROMPT,
-    VISUAL_OUTLINE_PROMPT,
-    BRIEFING_INFO_PROMPT,
-    MAP_MESSAGES_PROMPT,
-    SPEAKER_NOTES_PROMPT,
+    get_outline_prompt,
+    get_visual_outline_prompt,
+    get_briefing_info_prompt,
+    get_map_messages_prompt,
+    get_speaker_notes_prompt,
 )
+
+# Try to import slide intelligence, but make it optional
+try:
+    from slide_intelligence import (
+        analyze_presentation_intelligence,
+        format_intelligent_notes,
+        SlideType,
+        SlideAnalyzer
+    )
+    INTELLIGENCE_SUPPORT = True
+except ImportError:
+    INTELLIGENCE_SUPPORT = False
+    logger.warning("slide_intelligence module not found. Advanced intelligence features disabled.")
+
+# Try to import language utilities
+try:
+    from language_utils import detect_and_adapt_prompts, enhance_prompt_with_language
+    LANGUAGE_SUPPORT = True
+except ImportError:
+    LANGUAGE_SUPPORT = False
+    logger.warning("language_utils module not found. Multi-language support disabled.")
 
 try:
     from pptx import Presentation
@@ -29,8 +50,15 @@ except ImportError:
     DOCX_SUPPORT = False
 
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Enable debug logging for troubleshooting
+# Uncomment the following line to see debug messages
+logger.setLevel(logging.DEBUG)
 
 if "WRITER_API_KEY" in os.environ:
     wf.api_key = os.getenv("WRITER_API_KEY")
@@ -69,7 +97,6 @@ def _extract_text_from_file(file_path: str) -> str:
 
             extracted_text = writer.ai.tools.parse_pdf(file_id_or_file=file_id, format="text")
             logger.info(f"Extracted text from PDF {sanitized_filename}")
-            # Optionally delete the file after parsing
             try:
                 writer.ai.delete_file(file_id)
                 logger.info(f"Deleted temporary file {file_id}")
@@ -79,7 +106,7 @@ def _extract_text_from_file(file_path: str) -> str:
 
         elif file_extension == ".pptx":
             if not PPTX_SUPPORT:
-                 logger.warning(f"Skipping PPTX text extraction for {base_filename} as python-pptx is not installed. Please run 'pip install python-pptx'.")
+                 logger.warning(f"Skipping PPTX text extraction for {base_filename} as python-pptx is not installed.")
                  return f"[Text extraction skipped for PPTX: {base_filename} - python-pptx not installed]"
 
             logger.info(f"Processing as PPTX locally using python-pptx")
@@ -123,13 +150,38 @@ def _analyze_visuals(file_path: str, prompt: str) -> str:
     file_extension = os.path.splitext(file_path)[1].lower()
     base_filename = os.path.basename(file_path)
     sanitized_filename = base_filename.encode('ascii', 'ignore').decode('ascii')
-    # Added .txt to supported types for the workaround
-    supported_vision_types = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".txt"]
+    
+    # Extended list of supported formats for better visual analysis
+    supported_vision_types = [
+        ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg", ".txt"
+    ]
+    
     if file_extension not in supported_vision_types:
-        logger.warning(f"File type {file_extension} not supported by Palmyra Vision. Skipping visual analysis for {base_filename}.")
+        logger.warning(f"File type {file_extension} not directly supported by Palmyra Vision. Attempting text extraction fallback.")
+        # For unsupported types, try text extraction if it's a presentation file
+        if file_extension in [".pptx", ".ppt"]:
+            try:
+                extracted_text = _extract_text_from_file(file_path)
+                if extracted_text:
+                    # Save as temporary text file for vision analysis
+                    temp_text_path = os.path.join("data", f"temp_visual_{int(time.time())}.txt")
+                    with open(temp_text_path, "w", encoding="utf-8") as f:
+                        f.write(extracted_text)
+                    
+                    # Recursively call with text file
+                    result = _analyze_visuals(temp_text_path, prompt)
+                    
+                    # Clean up temp file
+                    if os.path.exists(temp_text_path):
+                        os.remove(temp_text_path)
+                    
+                    return result
+            except Exception as e:
+                logger.error(f"Failed to extract text for visual analysis: {e}")
+        
         return "[Visual analysis skipped: Unsupported file type]"
 
-    file_id = None # Initialize file_id to ensure it's available in finally block if upload fails
+    file_id = None
     try:
         with open(file_path, "rb") as f:
             file_data = f.read()
@@ -137,12 +189,24 @@ def _analyze_visuals(file_path: str, prompt: str) -> str:
         if file_extension == ".pdf":
             content_type = "application/pdf"
         elif file_extension == ".txt":
-             content_type = "text/plain" # Correct content type for text files
+            content_type = "text/plain"
+        elif file_extension in [".svg"]:
+            content_type = "image/svg+xml"
         else:
             import mimetypes
             content_type, _ = mimetypes.guess_type(file_path)
-            if not content_type or not content_type.startswith("image/"):
-                content_type = "application/octet-stream"
+            if not content_type:
+                # Default content types for common image formats
+                content_type_map = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".gif": "image/gif",
+                    ".webp": "image/webp",
+                    ".bmp": "image/bmp",
+                    ".tiff": "image/tiff"
+                }
+                content_type = content_type_map.get(file_extension, "application/octet-stream")
 
         uploaded_file = writer.ai.upload_file(
             data=file_data,
@@ -152,30 +216,62 @@ def _analyze_visuals(file_path: str, prompt: str) -> str:
         file_id = uploaded_file.id
         logger.info(f"Uploaded file for visual analysis {sanitized_filename} with ID: {file_id}")
 
-        # Use the passed prompt here, replacing placeholder if needed
-        variables = [{"name": "InputDocument", "file_id": file_id}] # Use a generic variable name
-        # Adjust prompt to use the generic variable name if the original placeholder exists
-        prompt_with_variable = prompt.replace("{{Presentation Deck}}", "{{InputDocument}}")
+        # All prompts should now use {{InputDocument}}
+        placeholder_found = "{{InputDocument}}" in prompt
+        logger.info(f"Vision API check - Placeholder found: {placeholder_found}, Prompt length: {len(prompt)}")
+        
+        if placeholder_found:
+            variables = [{"name": "InputDocument", "file_id": file_id}]
+        else:
+            logger.warning("Prompt does not contain {{InputDocument}} placeholder. Using empty variables array.")
+            logger.info(f"First 200 chars of prompt: {prompt[:200]}")
+            variables = []  # Empty array, not None
 
         client = writer.ai.WriterAIManager.acquire_client()
-        response = client.vision.analyze(
-            model="palmyra-vision",
-            prompt=prompt_with_variable, # <-- Use the modified prompt
-            variables=variables
-        )
+        
+        # Log the prompt for debugging (first 200 chars)
+        logger.debug(f"Vision API prompt preview: {prompt[:200]}...")
+        logger.info(f"Vision API variables count: {len(variables)}")
+        
+        try:
+            # Only pass variables parameter if we have actual variables
+            if variables:
+                response = client.vision.analyze(
+                    model="palmyra-vision",
+                    prompt=prompt,
+                    variables=variables
+                )
+            else:
+                # Omit variables parameter entirely if empty
+                response = client.vision.analyze(
+                    model="palmyra-vision",
+                    prompt=prompt
+                )
+            logger.info(f"Visual analysis completed for {sanitized_filename}")
+            
+            # Check if we got a valid response
+            if hasattr(response, 'data') and response.data:
+                result = response.data
+            else:
+                logger.warning(f"Vision API returned empty or invalid response for {sanitized_filename}")
+                result = "[Visual analysis returned no content]"
+        except Exception as api_error:
+            logger.error(f"Vision API error: {api_error}")
+            # Try to provide more helpful error message
+            if "variables" in str(api_error):
+                logger.error("Vision API variables issue. Current variables: " + str(variables))
+            raise
         logger.info(f"Visual analysis completed for {sanitized_filename}")
 
-        # Delete the uploaded file after successful analysis
         try:
             writer.ai.delete_file(file_id)
             logger.info(f"Deleted temporary file {file_id} after visual analysis")
         except Exception as del_e:
             logger.warning(f"Could not delete temporary file {file_id} after visual analysis: {del_e}")
 
-        return response.data
+        return result
     except Exception as e:
         logger.error(f"Error analyzing visuals in {base_filename}: {e}", exc_info=True)
-        # Ensure temporary file ID is deleted even on error if it exists
         if file_id:
              try:
                  writer.ai.delete_file(file_id)
@@ -184,30 +280,25 @@ def _analyze_visuals(file_path: str, prompt: str) -> str:
                  logger.warning(f"Could not delete temporary file {file_id} after analysis error: {del_e}")
         return f"[Error during visual analysis: {type(e).__name__}]"
 
-# --- Helper function to handle inline formatting ---
 def _add_formatted_text_to_paragraph(paragraph: Any, text: str):
     """Adds text to a paragraph, applying bold and italic formatting based on Markdown."""
-    # Regex to find **bold** or _italic_ or *italic* text, handling potential overlaps simply
-    # It captures the marker and the content separately.
-    # Prioritize bold first to handle cases like **bold *italic*** correctly (though nested isn't fully supported here)
-    parts = re.split(r'(\*\*.*?\*\*|[*_].*?[*_])', text) # Split by bold or italic markers
+    parts = re.split(r'(\*\*.*?\*\*|[*_].*?[*_])', text)
 
     for part in parts:
-        if not part: # Skip empty strings resulting from split
+        if not part:
             continue
 
         run = paragraph.add_run()
         if part.startswith('**') and part.endswith('**'):
-            run.text = part[2:-2] # Add text without markers
+            run.text = part[2:-2]
             run.bold = True
         elif (part.startswith('*') and part.endswith('*')) or \
              (part.startswith('_') and part.endswith('_')):
-            run.text = part[1:-1] # Add text without markers
+            run.text = part[1:-1]
             run.italic = True
         else:
-            run.text = part # Add as normal text
+            run.text = part
 
-# --- Modified function to generate DOCX bytes ---
 def _generate_docx_bytes(content: str) -> bytes:
     """Creates a DOCX file in memory from markdown-like text content and returns its bytes."""
     if not DOCX_SUPPORT:
@@ -215,82 +306,80 @@ def _generate_docx_bytes(content: str) -> bytes:
         raise ImportError("python-docx is required for DOCX generation. Please install it.")
 
     document = docx.Document()
-    # Optional: Set default font if needed
-    # style = document.styles['Normal']
-    # font = style.font
-    # font.name = 'Calibri'
-    # font.size = Pt(11)
 
     for line in content.split('\n'):
         stripped_line = line.strip()
 
-        # Handle Headings (Markdown Style: #, ##, ### etc.)
         heading_match = re.match(r"^(#+)\s+(.*)", stripped_line)
         if heading_match:
             level = len(heading_match.group(1))
             text_content = heading_match.group(2)
-            level = max(1, min(level, 9)) # Ensure level is within Word's range
+            level = max(1, min(level, 9))
             heading = document.add_heading(level=level)
-            _add_formatted_text_to_paragraph(heading, text_content) # Apply inline formatting
-        # Handle Speaker Notes specific "Slide X:" format as Heading 1
+            _add_formatted_text_to_paragraph(heading, text_content)
         elif stripped_line.startswith("Slide ") and ":" in stripped_line:
              try:
-                 # Attempt to extract text after "Slide X:"
                  heading_text = stripped_line.split(":", 1)[1].strip()
                  heading = document.add_heading(level=1)
-                 _add_formatted_text_to_paragraph(heading, heading_text) # Apply inline formatting
-             except IndexError: # Handle case like "Slide 1" with no colon
+                 _add_formatted_text_to_paragraph(heading, heading_text)
+             except IndexError:
                  heading = document.add_heading(level=1)
-                 _add_formatted_text_to_paragraph(heading, stripped_line) # Apply inline formatting
-        # Handle Lists (Markdown Style: * or -)
+                 _add_formatted_text_to_paragraph(heading, stripped_line)
         elif stripped_line.startswith("* ") or stripped_line.startswith("- "):
             text_content = stripped_line[2:]
             if text_content:
                  paragraph = document.add_paragraph(style='List Bullet')
-                 _add_formatted_text_to_paragraph(paragraph, text_content) # Apply inline formatting
+                 _add_formatted_text_to_paragraph(paragraph, text_content)
             else:
-                 document.add_paragraph(style='List Bullet') # Add empty bullet point
-        # Handle Empty lines
+                 document.add_paragraph(style='List Bullet')
         elif not stripped_line:
              document.add_paragraph()
-        # Handle Regular Paragraphs
         else:
             paragraph = document.add_paragraph()
-            _add_formatted_text_to_paragraph(paragraph, stripped_line) # Apply inline formatting
+            _add_formatted_text_to_paragraph(paragraph, stripped_line)
 
-    # Save to an in-memory buffer
     buffer = io.BytesIO()
     try:
         document.save(buffer)
         logger.info("Generated DOCX content in memory.")
-        buffer.seek(0) # Rewind the buffer to the beginning
+        buffer.seek(0)
         return buffer.getvalue()
     except Exception as e:
         logger.error(f"Failed to save DOCX to memory buffer: {e}")
-        raise # Re-raise the error
+        raise
 
-# --- Modified download helper ---
 def _download_content_as_docx(state, content_key: str):
     """Helper to generate and download content as DOCX."""
     logger.info(f"Attempting to download content for key: {content_key}")
-    if not state["results"] or content_key not in state["results"] or not state["results"][content_key]:
+    
+    # Check if results exist and has the content key
+    if "results" not in state or content_key not in state["results"]:
+        message = f"!Results not available for download."
+        state["processing_message"] = message
+        logger.warning(f"Results key missing in state: {list(state.keys())}")
+        return
+        
+    content = state["results"].get(content_key, "")
+    
+    if not content:
         message = f"!Content for '{content_key}' not available for download."
         state["processing_message"] = message
-        logger.warning(message)
+        logger.warning(f"Content empty for key: {content_key}")
         return
 
-    content = state["results"][content_key]
+    # Ensure content is string
     if not isinstance(content, str):
-        content = str(content) # Ensure content is string
+        content = str(content)
 
     try:
         filename_docx = f"{content_key}_notes.docx"
-        docx_bytes = _generate_docx_bytes(content) # Generate bytes directly
+        docx_bytes = _generate_docx_bytes(content)
         state.file_download(
             wf.pack_bytes(docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
             filename_docx
         )
         state["processing_message"] = f"+Download initiated for {filename_docx}."
+        logger.info(f"Download successful for {filename_docx}")
     except Exception as e:
         message = f"-Error preparing DOCX download for '{content_key}': {e}"
         state["processing_message"] = message
@@ -302,14 +391,14 @@ def _get_input_text(state, input_type: Literal["deck", "briefing"]) -> str:
         method = state["deck_input_method"]
         if method == "Upload File":
             if state["deck_file"]["path"]:
-                if state["deck_file"]["text_content"] is None: # Extract if not already done
+                if state["deck_file"]["text_content"] is None:
                      state["processing_message"] = "%Extracting text from presentation deck..."
                      state["deck_file"]["text_content"] = _extract_text_from_file(state["deck_file"]["path"])
                 return state["deck_file"]["text_content"] or ""
             else:
-                return "" # No file uploaded
+                return ""
         elif method == "Enter Text":
-            return state["deck_file"]["text_content"] or "" # Use saved text
+            return state["deck_file"]["text_content"] or ""
         else:
             return ""
     elif input_type == "briefing":
@@ -318,13 +407,13 @@ def _get_input_text(state, input_type: Literal["deck", "briefing"]) -> str:
             briefing_texts = []
             for i, briefing_file in enumerate(state["briefing_files"]):
                 if briefing_file["path"]:
-                    if briefing_file["text_content"] is None: # Extract if not already done
+                    if briefing_file["text_content"] is None:
                         state["processing_message"] = f"%Extracting text from briefing document {i+1}/{len(state['briefing_files'])}..."
                         briefing_file["text_content"] = _extract_text_from_file(briefing_file["path"])
                     briefing_texts.append(briefing_file["text_content"] or "")
             return "\n\n---\n\n".join(briefing_texts)
         elif method == "Enter Text":
-            return state["briefing_manual_text"] or "" # Use saved text
+            return state["briefing_manual_text"] or ""
         else:
             return ""
     return ""
@@ -337,60 +426,50 @@ def _update_generate_button_state(state):
     elif state["deck_input_method"] == "Enter Text":
         deck_ready = bool(state["deck_file"]["text_content"])
 
-    briefing_ready = False
-    if state["briefing_input_method"] == "Upload File":
-        briefing_ready = len(state["briefing_files"]) > 0
-    elif state["briefing_input_method"] == "Enter Text":
-        briefing_ready = bool(state["briefing_manual_text"])
-
-    # Disable generate button if generation is already in progress OR inputs are not ready
-    state["ui_controls"]["generate_disabled"] = "yes" if (state["is_generating"] or not (deck_ready and briefing_ready)) else "no"
+    # Briefing is now optional - button is enabled if deck is ready
+    state["ui_controls"]["generate_disabled"] = "yes" if (state["is_generating"] or not deck_ready) else "no"
 
 
 # --- State Initialization ---
-os.makedirs("data", exist_ok=True) # Keep this for potential temporary file needs (like uploads)
+os.makedirs("data", exist_ok=True)
 placeholder_data = {'Description': [], 'Label': []}
 initial_df = pd.DataFrame(placeholder_data)
 
 initial_state = wf.init_state({
     "app_title": "Speaker Notes Generator",
     "logo_path": "static/writer_logo.svg",
-    "deck_file": {"name": None, "path": None, "id": None, "text_content": None}, # Added text_content
+    "deck_file": {"name": None, "path": None, "id": None, "text_content": None},
     "briefing_files": [],
     "settings": {
         "timing": "30 Minutes",
-        "style": "Informative"
+        "style": "Informative",
+        "verbosity": "Standard"  # New setting for verbosity control
     },
     "metrics": {"new_features": 0, "caveats": 0, "fixed_issues": 0, "total": 0},
-    "processing_step": "idle", # idle, text_extraction, step1, step2, step3, step4, step5, done, error
+    "processing_step": "idle",
     "processing_message": "Upload your presentation deck and briefing document(s).",
     "results": {
-        "outline": None,
-        "visuals": None,
-        "briefing_info": None,
-        "mapping": None,
-        "speaker_notes": None,
+        "outline": "",
+        "visuals": "",
+        "briefing_info": "",
+        "mapping": "",
+        "speaker_notes": "",
     },
     "ui_controls": {
         "generate_disabled": "yes",
         "download_disabled": "yes",
-        # --- Add visibility flags ---
         "show_deck_upload": True,
         "show_deck_text_input": False,
         "show_briefing_upload": True,
         "show_briefing_text_input": False,
-        # --- End Add ---
     },
-    # New state variables for input method and text
-    "deck_input_method": "Upload File", # "Upload File" or "Enter Text"
-    "briefing_input_method": "Upload File", # "Upload File" or "Enter Text"
-    "deck_text_input": "", # Temporary storage for deck text area
-    "briefing_text_input": "", # Temporary storage for briefing text area
-    "briefing_manual_text": "", # Saved manual briefing text
-    # --- Add generation tracking flags ---
+    "deck_input_method": "Upload File",
+    "briefing_input_method": "Upload File",
+    "deck_text_input": "",
+    "briefing_text_input": "",
+    "briefing_manual_text": "",
     "is_generating": False,
     "stop_requested": False,
-    # --- End Add ---
 })
 initial_state.import_stylesheet("custom_styles", "/static/custom.css")
 
@@ -405,16 +484,15 @@ def handle_deck_upload(state, payload):
         name = uploaded_file.get("name")
         file_data = uploaded_file.get("data")
 
-        # Save temporarily to disk for text extraction
         temp_path = os.path.join("data", f"deck_{name}")
         with open(temp_path, "wb") as file_handle:
             file_handle.write(file_data)
 
         if state["deck_file"] is None: state["deck_file"] = {}
         state["deck_file"]["name"] = name
-        state["deck_file"]["path"] = temp_path # Store path for potential later use (e.g., vision)
+        state["deck_file"]["path"] = temp_path
         state["deck_file"]["id"] = None
-        state["deck_file"]["text_content"] = None # Reset text content, will be extracted on demand
+        state["deck_file"]["text_content"] = None
         state["processing_message"] = f"+Deck '{name}' uploaded."
         _update_generate_button_state(state)
         logger.info(f"Deck file uploaded: {name}")
@@ -432,17 +510,15 @@ def handle_briefing_upload(state, payload):
         for uploaded_file in payload:
             name = uploaded_file.get("name")
             file_data = uploaded_file.get("data")
-            # Save temporarily to disk for text extraction
             temp_path = os.path.join("data", f"briefing_{name}")
             with open(temp_path, "wb") as file_handle:
                 file_handle.write(file_data)
-            # Store path and reset text content
             new_files_info.append({"name": name, "path": temp_path, "id": None, "text_content": None})
             logger.info(f"Briefing file uploaded: {name}")
 
         if state["briefing_files"] is None: state["briefing_files"] = []
         state["briefing_files"] += new_files_info
-        state["briefing_manual_text"] = "" # Clear manual text if files are uploaded
+        state["briefing_manual_text"] = ""
         state["processing_message"] = f"+{len(payload)} briefing file(s) added."
         _update_generate_button_state(state)
 
@@ -450,17 +526,13 @@ def handle_briefing_upload(state, payload):
         state["processing_message"] = f"-Error uploading briefing(s): {e}"
         logger.error(f"Error in handle_briefing_upload: {e}", exc_info=True)
 
-# --- New Handlers for Input Method Change ---
 def handle_deck_method_change(state, payload):
     state["deck_input_method"] = payload
-    # --- Update visibility flags ---
     state["ui_controls"]["show_deck_upload"] = (payload == "Upload File")
     state["ui_controls"]["show_deck_text_input"] = (payload == "Enter Text")
-    # --- End Update ---
-    # Clear the other input method's data
     if payload == "Upload File":
         state["deck_file"]["text_content"] = None
-    else: # Enter Text
+    else:
         state["deck_file"]["path"] = None
         state["deck_file"]["name"] = None
         state["deck_file"]["id"] = None
@@ -468,21 +540,17 @@ def handle_deck_method_change(state, payload):
 
 def handle_briefing_method_change(state, payload):
     state["briefing_input_method"] = payload
-    # --- Update visibility flags ---
     state["ui_controls"]["show_briefing_upload"] = (payload == "Upload File")
     state["ui_controls"]["show_briefing_text_input"] = (payload == "Enter Text")
-    # --- End Update ---
-    # Clear the other input method's data
     if payload == "Upload File":
         state["briefing_manual_text"] = ""
-    else: # Enter Text
-        state["briefing_files"] = []  # Clear file list when entering text
+    else:
+        state["briefing_files"] = []
     _update_generate_button_state(state)
 
-# --- New Handlers for Saving Text Input ---
 def handle_save_deck_text(state):
     state["deck_file"]["text_content"] = state["deck_text_input"]
-    state["deck_file"]["path"] = None # Ensure path is cleared
+    state["deck_file"]["path"] = None
     state["deck_file"]["name"] = "Manual Text Input"
     state["deck_file"]["id"] = None
     state["processing_message"] = "+Deck text saved."
@@ -490,11 +558,10 @@ def handle_save_deck_text(state):
 
 def handle_save_briefing_text(state):
     state["briefing_manual_text"] = state["briefing_text_input"]
-    state["briefing_files"] = [] # Ensure file list is cleared
+    state["briefing_files"] = []
     state["processing_message"] = "+Briefing text saved."
     _update_generate_button_state(state)
 
-# --- Stop Handler ---
 def handle_stop_generate(state):
     """Sets the stop flag to interrupt the generation process."""
     if state["is_generating"]:
@@ -505,8 +572,7 @@ def handle_stop_generate(state):
         state["processing_message"] = "!Generation is not currently running."
 
 def handle_generate(state):
-    """Orchestrates the AI processing pipeline."""
-    # Check if inputs are ready based on selected methods
+    """Orchestrates the AI processing pipeline with verbosity control."""
     deck_ready = False
     if state["deck_input_method"] == "Upload File":
         deck_ready = bool(state["deck_file"]["path"])
@@ -528,17 +594,20 @@ def handle_generate(state):
          logger.error("WRITER_API_KEY not set.")
          return
 
-    # --- Start Generation ---
     state["is_generating"] = True
-    state["stop_requested"] = False # Reset stop flag
-    state["ui_controls"]["generate_disabled"] = "yes" # Disable generate button
+    state["stop_requested"] = False
+    state["ui_controls"]["generate_disabled"] = "yes"
     state["ui_controls"]["download_disabled"] = "yes"
     state["processing_step"] = "idle"
-    state["results"] = {} # Clear previous results
-    # --- End Start ---
+    state["results"] = {}
+    
+    # Get verbosity level
+    verbosity = state["settings"]["verbosity"]
+    timing = state["settings"]["timing"]
+    style = state["settings"]["style"]
 
     try:
-        # --- Step 0: Get Text Content ---
+        # Step 0: Get Text Content
         state["processing_step"] = "text_extraction"
         state["processing_message"] = "%Getting text content..."
         deck_text = _get_input_text(state, "deck")
@@ -549,105 +618,194 @@ def handle_generate(state):
         if not combined_briefing_text:
              raise ValueError("Briefing document content is empty.")
 
-        # --- Check Stop Flag ---
+        # Detect language if supported
+        if LANGUAGE_SUPPORT:
+            try:
+                language_info = detect_and_adapt_prompts(deck_text, combined_briefing_text)
+                if language_info and language_info.get('language_code') != 'en':
+                    state["processing_message"] = f"%Detected {language_info['language_name']} content. Generating notes in {language_info['language_name']}..."
+                    logger.info(f"Language detected: {language_info['language_name']} ({language_info['language_code']})")
+            except Exception as e:
+                logger.warning(f"Language detection failed: {e}")
+                language_info = None
+
         if state["stop_requested"]: raise GenerationStoppedError()
 
-        # --- Step 1: Extract Outline ---
+        # Step 1: Extract Outline with verbosity control and language support
         state["processing_step"] = "step1"
-        state["processing_message"] = "%Generating presentation outline using vision model..."
-        # --- START: Modified logic for Step 1 using vision model ---
-        temp_text_filename = f"temp_deck_text_{int(time.time())}.txt"
-        temp_text_path = os.path.join("data", temp_text_filename)
-        outline = "[Error generating outline with vision model]" # Default error message
-        temp_file_id = None # Initialize to handle potential upload errors
-        try:
-            # Save extracted text to a temporary file
-            with open(temp_text_path, "w", encoding="utf-8") as f:
-                f.write(deck_text)
-            logger.info(f"Saved extracted deck text to temporary file: {temp_text_path}")
-
-            # --- Check Stop Flag ---
-            if state["stop_requested"]: raise GenerationStoppedError()
-
-            # Call _analyze_visuals with the text file path and the outline prompt
-            # _analyze_visuals handles uploading and deleting the temp file ID
-            outline = _analyze_visuals(temp_text_path, OUTLINE_PROMPT) # Pass the original OUTLINE_PROMPT
-
-        except GenerationStoppedError:
-             raise # Re-raise to be caught by the main handler
-        except Exception as e:
-            logger.error(f"Error in Step 1 using vision model: {e}", exc_info=True)
-            state["processing_message"] = f"-Error generating outline: {type(e).__name__}"
-            # Ensure cleanup even if analysis fails before file deletion in helper
-            if temp_file_id:
-                 try:
-                     writer.ai.delete_file(temp_file_id)
-                     logger.info(f"Cleaned up temporary text file {temp_file_id} after error.")
-                 except Exception as del_e:
-                     logger.warning(f"Could not delete temporary text file {temp_file_id} after error: {del_e}")
-        finally:
-            # Clean up the temporary text file from local disk
-            if os.path.exists(temp_text_path):
-                try:
-                    os.remove(temp_text_path)
-                    logger.info(f"Removed temporary text file from disk: {temp_text_path}")
-                except OSError as e:
-                    logger.error(f"Error removing temporary text file {temp_text_path}: {e}")
-        # --- END: Modified logic for Step 1 ---
+        state["processing_message"] = "%Generating presentation outline..."
+        
+        # Get the appropriate prompt based on verbosity
+        outline_prompt = get_outline_prompt(verbosity)
+        
+        # Add language instructions if detected
+        if language_info:
+            try:
+                outline_prompt = enhance_prompt_with_language(outline_prompt, language_info)
+            except Exception as e:
+                logger.warning(f"Failed to enhance prompt with language: {e}")
+                # Continue with original prompt
+        
+        # Use regular AI model for outline generation
+        logger.info("Generating outline using text analysis")
+        full_prompt = outline_prompt + "\n" + deck_text
+        outline = _call_ai_model(full_prompt, temperature=0.0)
+        
         state["results"]["outline"] = outline
-        logger.info("Step 1 (Outline with Vision Model) completed.")
+        logger.info("Step 1 (Outline) completed.")
 
-        # --- Check Stop Flag ---
         if state["stop_requested"]: raise GenerationStoppedError()
 
-        # --- Step 2: Analyze Visuals (Only if deck was uploaded) ---
+        # Step 2: Analyze Visuals with verbosity control and language support
         state["processing_step"] = "step2"
         if state["deck_input_method"] == "Upload File" and state["deck_file"]["path"]:
             state["processing_message"] = "%Analyzing presentation visuals..."
-            # Pass the specific visual prompt here
-            visual_analysis = _analyze_visuals(state["deck_file"]["path"], VISUAL_OUTLINE_PROMPT)
+            visual_prompt = get_visual_outline_prompt(verbosity)
+            
+            # Add language instructions if detected
+            if language_info:
+                visual_prompt = enhance_prompt_with_language(visual_prompt, language_info)
+                
+            visual_analysis = _analyze_visuals(state["deck_file"]["path"], visual_prompt)
             state["results"]["visuals"] = visual_analysis
             logger.info("Step 2 (Visuals) completed.")
         else:
             state["results"]["visuals"] = "[Visual analysis skipped: Text input provided for deck]"
             logger.info("Step 2 (Visuals) skipped as text input was used for deck.")
 
-        # --- Check Stop Flag ---
         if state["stop_requested"]: raise GenerationStoppedError()
 
-        # --- Step 3: Extract Briefing Info ---
+        # Step 3: Extract Briefing Info (if briefing provided) with language support
         state["processing_step"] = "step3"
-        state["processing_message"] = "%Extracting key information from briefing..."
-        prompt3 = BRIEFING_INFO_PROMPT.replace("{{Briefing(s)}}", combined_briefing_text)
-        briefing_info = _call_ai_model(prompt3, temperature=0.0)
-        state["results"]["briefing_info"] = briefing_info
-        logger.info("Step 3 (Briefing Info) completed.")
+        logger.info(f"Step 3 starting. has_briefing={has_briefing}, briefing text length={len(combined_briefing_text)}")
+        
+        if has_briefing:
+            state["processing_message"] = "%Extracting key information from briefing..."
+            briefing_prompt = get_briefing_info_prompt(verbosity)
+            
+            # Add language instructions if detected
+            if language_info:
+                briefing_prompt = enhance_prompt_with_language(briefing_prompt, language_info)
+                
+            prompt3 = briefing_prompt.replace("{{Briefing(s)}}", combined_briefing_text)
+            briefing_info = _call_ai_model(prompt3, temperature=0.0)
+            state["results"]["briefing_info"] = briefing_info
+            logger.info("Step 3 (Briefing Info) completed.")
+        else:
+            # Generate context from deck content when no briefing is provided
+            state["processing_message"] = "%Generating context from presentation content..."
+            context_prompt = f"""
+Analyze the presentation content and extract key context that would typically come from a briefing document.
 
-        # --- Check Stop Flag ---
+Based on the presentation outline and visuals:
+{outline}
+
+{state["results"]["visuals"] or ""}
+
+Extract and infer:
+• Key Business Context: What situation or challenge is this presentation addressing?
+• Target Audience: Who is this presentation likely for?
+• Main Objectives: What are the apparent goals of this presentation?
+• Key Themes: What are the recurring topics or messages?
+• Implied Recommendations: What actions or decisions does the presentation seem to advocate?
+
+Present findings in structured bullet points for easy reference.
+"""
+            # Add language instructions if detected
+            if language_info:
+                context_prompt = enhance_prompt_with_language(context_prompt, language_info)
+                
+            briefing_info = _call_ai_model(context_prompt, temperature=0.0)
+            state["results"]["briefing_info"] = briefing_info
+            logger.info("Step 3 (Context Generation from Deck) completed.")
+
         if state["stop_requested"]: raise GenerationStoppedError()
 
-        # --- Step 4: Map Messages ---
+        # Step 4: Map Messages with verbosity control and language support
         state["processing_step"] = "step4"
         state["processing_message"] = "%Mapping messages to slides..."
-        prompt4 = MAP_MESSAGES_PROMPT.replace("{{Presentation Outline}}", outline)
+        mapping_prompt = get_map_messages_prompt(verbosity)
+        
+        # Add language instructions if detected
+        if language_info:
+            mapping_prompt = enhance_prompt_with_language(mapping_prompt, language_info)
+            
+        prompt4 = mapping_prompt.replace("{{Presentation Outline}}", outline)
         prompt4 = prompt4.replace("{{Visual Presentation Outline}}", state["results"]["visuals"] or "")
         prompt4 = prompt4.replace("{{Key Information from the Briefing}}", briefing_info)
         mapping = _call_ai_model(prompt4, temperature=0.0)
         state["results"]["mapping"] = mapping
         logger.info("Step 4 (Mapping) completed.")
 
-        # --- Check Stop Flag ---
         if state["stop_requested"]: raise GenerationStoppedError()
 
-        # --- Step 5: Generate Speaker Notes ---
+        # Step 5: Generate Speaker Notes with optional intelligence enhancement and language support
         state["processing_step"] = "step5"
         state["processing_message"] = "%Generating speaker notes..."
-        prompt5 = SPEAKER_NOTES_PROMPT.replace("{{Map Messages to Each Slide}}", mapping)
+        
+        # Analyze presentation intelligence if module is available
+        presentation_intel = {}
+        if INTELLIGENCE_SUPPORT and verbosity != "Detailed":
+            try:
+                presentation_intel = analyze_presentation_intelligence(outline, state["results"]["visuals"] or "")
+                logger.info(f"Analyzed {len(presentation_intel)} slides for intelligence")
+            except Exception as e:
+                logger.warning(f"Intelligence analysis failed: {e}")
+        
+        # Generate base speaker notes
+        speaker_notes_prompt = get_speaker_notes_prompt(verbosity, timing, style)
+        
+        # Add language instructions if detected
+        if language_info:
+            speaker_notes_prompt = enhance_prompt_with_language(speaker_notes_prompt, language_info)
+            
+        prompt5 = speaker_notes_prompt.replace("{{Map Messages to Each Slide}}", mapping)
         prompt5 = prompt5.replace("{{Presentation Outline}}", outline)
         prompt5 = prompt5.replace("{{Visual Presentation Outline}}", state["results"]["visuals"] or "")
-        prompt5 = prompt5.replace("{{Timing}}", state["settings"]["timing"])
-        prompt5 = prompt5.replace("{{Presentation Style}}", state["settings"]["style"])
         speaker_notes_text = _call_ai_model(prompt5, temperature=0.0)
+        
+        # Enhance notes with slide intelligence if available and not in Detailed mode
+        if INTELLIGENCE_SUPPORT and presentation_intel and verbosity != "Detailed":
+            try:
+                enhanced_notes = []
+                notes_by_slide = re.split(r'(Slide\s+\d+:.*?)(?=Slide\s+\d+:|$)', speaker_notes_text, flags=re.IGNORECASE)
+                
+                for i in range(1, len(notes_by_slide), 2):
+                    if i < len(notes_by_slide):
+                        slide_header = notes_by_slide[i]
+                        slide_content = notes_by_slide[i+1] if i+1 < len(notes_by_slide) else ""
+                        
+                        # Extract slide number
+                        slide_num_match = re.search(r'Slide\s+(\d+):', slide_header)
+                        if slide_num_match:
+                            slide_num = int(slide_num_match.group(1))
+                            
+                            # Add intelligence insights if available
+                            if slide_num in presentation_intel:
+                                intel = presentation_intel[slide_num]
+                                
+                                # Add slide type indicator for speaker reference
+                                type_indicator = f"\n[{intel['type'].value.title()} Slide]"
+                                
+                                # Add specific insights for data slides
+                                if intel['type'] == SlideType.DATA_VISUAL and intel['insights']:
+                                    insights_added = []
+                                    if intel['insights'].get('trends'):
+                                        insights_added.append(f"• Trend insight: {intel['insights']['trends'][0]}")
+                                    if intel['insights'].get('outliers'):
+                                        insights_added.append(f"• Notable finding: {intel['insights']['outliers'][0]}")
+                                    
+                                    if insights_added:
+                                        slide_content = slide_content.rstrip() + "\n" + "\n".join(insights_added)
+                                
+                                enhanced_notes.append(slide_header + type_indicator + slide_content)
+                            else:
+                                enhanced_notes.append(slide_header + slide_content)
+                
+                speaker_notes_text = "".join(enhanced_notes)
+            except Exception as e:
+                logger.warning(f"Intelligence enhancement failed: {e}")
+        
         state["results"]["speaker_notes"] = speaker_notes_text
         logger.info("Step 5 (Speaker Notes) completed.")
 
@@ -657,21 +815,19 @@ def handle_generate(state):
 
     except GenerationStoppedError:
          state["processing_message"] = "!Generation stopped by user."
-         state["processing_step"] = "error" # Or a new 'stopped' state if preferred
+         state["processing_step"] = ""  # Hide tabs on stop
          logger.info("Generation process stopped by user request.")
     except Exception as e:
         error_message = f"-An error occurred during step '{state['processing_step']}': {type(e).__name__}"
         state["processing_message"] = error_message
-        state["processing_step"] = "error"
+        state["processing_step"] = ""  # Hide tabs on error
         logger.error(f"Pipeline error at step {state['processing_step']}: {e}", exc_info=True)
     finally:
-        # --- End Generation ---
         state["is_generating"] = False
-        state["stop_requested"] = False # Reset stop flag regardless of outcome
-        _update_generate_button_state(state) # Re-evaluate generate button state
-        # --- End End ---
+        state["stop_requested"] = False
+        _update_generate_button_state(state)
 
-# --- Download Handlers ---
+# Download Handlers
 def handle_download_outline(state):
     _download_content_as_docx(state, "outline")
 

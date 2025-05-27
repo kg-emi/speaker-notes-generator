@@ -1,15 +1,336 @@
-# AI prompts for each processing step
+# AI prompts for each processing step with verbosity control
 
-# 1. Prompt for "Outline" Component (Model: Palmyra X 003 Instruct)
+def get_verbosity_instructions(verbosity_level):
+    """Returns verbosity-specific instructions for prompts."""
+    if verbosity_level == "Brief":
+        return """
+IMPORTANT: Keep all outputs extremely concise. Use short bullet points only.
+- Maximum 5-7 words per bullet point
+- No explanatory text or elaboration
+- Focus only on the most critical information
+- Aim for 2-3 bullet points per slide maximum
+"""
+    elif verbosity_level == "Detailed":
+        return """
+Provide comprehensive analysis with full context and explanations.
+- Include detailed reasoning and implications
+- Provide thorough data analysis
+- Add context and background where helpful
+- Aim for 5-7 bullet points per slide
+"""
+    else:  # Standard
+        return """
+Provide balanced, professional notes with essential information.
+- Keep bullet points to 10-15 words
+- Include key data and insights
+- Focus on actionable information
+- Aim for 3-5 bullet points per slide
+"""
+
+def get_timing_instructions(timing):
+    """Returns timing-specific instructions for speaker notes."""
+    minutes = int(timing.split()[0])
+    if minutes <= 10:
+        return "CRITICAL: This is a very short presentation. Include only the most essential points. Maximum 2-3 brief bullet points per slide."
+    elif minutes <= 20:
+        return "Keep notes concise. Focus on key messages only. Maximum 3-4 bullet points per slide."
+    elif minutes <= 30:
+        return "Provide standard coverage with key points and essential data. Maximum 4-5 bullet points per slide."
+    else:
+        return "You have time for comprehensive coverage. Include important details and context. Maximum 5-6 bullet points per slide."
+
+# 1. Prompt for "Outline" Component (Model: Palmyra X 004)
+def get_outline_prompt(verbosity_level="Standard"):
+    base_prompt = """
+Your job is to analyse the structure of the presentation by examining each slide and identifying its title or creating a brief description when no title is present.
+
+{verbosity_instructions}
+
+For each slide, provide:
+ - Slide number
+ - The exact title OR a brief description (5-10 words max)
+
+Format exactly as:
+Slide 1: [Title or brief description]
+Slide 2: [Title or brief description]
+
+Process slides sequentially. Extract exact titles when present, otherwise create minimal descriptive phrases.
+
+Presentation content:
+"""
+    return base_prompt.format(verbosity_instructions=get_verbosity_instructions(verbosity_level))
+
+# 2. Prompt for "Visual Presentation Outline" Component
+def get_visual_outline_prompt(verbosity_level="Standard"):
+    if verbosity_level == "Brief":
+        return """
+Analyze {{InputDocument}} visuals. For each slide with charts/graphs/tables:
+
+Slide X: [Visual Title]
+- Type: [Chart/Graph/Table/Image]
+- Key insight: [What story does this data tell? Max 10 words]
+- Action item: [What should we do with this information?]
+
+Focus on insights and implications, not descriptions.
+"""
+    elif verbosity_level == "Detailed":
+        # Return the detailed prompt (VISUAL_OUTLINE_PROMPT already has {{InputDocument}})
+        return VISUAL_OUTLINE_PROMPT
+    else:  # Standard
+        return """
+Analyze {{InputDocument}} visuals with focus on insights, not just description.
+
+For each slide with data visuals:
+
+Slide X: [Visual Title or Description]
+- Visual Type: [Specific chart/graph/table type]
+- The Story: [What narrative does this data tell? 15-20 words]
+- Key Insights:
+  • [Primary finding with specific number]
+  • [Trend or pattern that matters]
+  • [Comparison or outlier worth noting]
+- Strategic Implication: [What action this data suggests we take]
+
+Focus on the "so what" - why this data matters for decision-making.
+Extract insights that drive action, not just observations.
+"""
+
+# 3. Prompt for "Key Information from the Briefing" Component
+def get_briefing_info_prompt(verbosity_level="Standard"):
+    if verbosity_level == "Brief":
+        return """
+Extract only the most critical points from {{Briefing(s)}}:
+
+Key Statistics (max 3):
+• [Stat with context, max 10 words]
+
+Key Findings (max 3):
+• [Finding, max 10 words]
+
+Strategic Actions (max 2):
+• [Action, max 10 words]
+
+Be extremely selective. Only include game-changing insights.
+"""
+    elif verbosity_level == "Detailed":
+        return BRIEFING_INFO_PROMPT  # Use original detailed prompt
+    else:  # Standard
+        return """
+Extract key insights from {{Briefing(s)}} for client presentation:
+
+Key Statistics:
+• [Important data point with brief context]
+• [Growth rate or comparison]
+• [Market size or share]
+
+Key Findings:
+• [Most important discovery or trend]
+• [Critical market insight]
+• [Competitive advantage or challenge]
+
+Strategic Recommendations:
+• [Primary action to take]
+• [Secondary priority]
+
+Keep each point under 15 words. Focus on actionable, decision-driving information.
+"""
+
+# 4. Prompt for "Mapping Key Messages to Each Slide" Component
+def get_map_messages_prompt(verbosity_level="Standard"):
+    if verbosity_level == "Brief":
+        return """
+Map insights to slides from {{Presentation Outline}}, {{Visual Presentation Outline}}, and {{Key Information from the Briefing}}.
+
+For each slide:
+
+Slide [Number]: [Title]
+Type: [Identify if it's intro/data/comparison/conclusion]
+Key Message: [One essential point from briefing/visual that fits this slide]
+
+Only include the most critical, actionable information.
+"""
+    elif verbosity_level == "Detailed":
+        return """
+You are a strategic presentation advisor. Map insights intelligently from {{Presentation Outline}}, {{Visual Presentation Outline}}, and {{Key Information from the Briefing}}.
+
+For each slide:
+
+Slide [Number]: [Title]
+
+Slide Intelligence:
+- Purpose: [What role does this slide play in the narrative?]
+- Type: [Title/Intro/Data/Comparison/Transition/Conclusion]
+- Audience Need: [What question is this slide answering?]
+
+Strategic Mapping:
+From Briefing:
+• [Most relevant strategic insight for this slide's purpose]
+• [Supporting evidence or context]
+• [Implication that connects to this slide's message]
+
+From Visuals:
+• [Key data story that supports the slide's objective]
+• [Specific insight or trend worth highlighting]
+• [Action item derived from the visual analysis]
+
+Storytelling Connection:
+- Link to Previous: [How this builds on what came before]
+- Core Message: [The one thing audience must understand]
+- Bridge to Next: [How this sets up what follows]
+
+Intelligence Notes:
+- If intro slide: Focus on framing the problem/opportunity
+- If data slide: Emphasize insights over descriptions
+- If comparison: Highlight decision criteria and recommendation
+- If conclusion: Synthesize journey and crystallize action items
+
+Remember: Every slide should advance the story. Map information that moves the narrative forward, not just fills space.
+"""
+    else:  # Standard
+        return """
+Strategically map insights to each slide using {{Presentation Outline}}, {{Visual Presentation Outline}}, and {{Key Information from the Briefing}}.
+
+For each slide, consider its role in the story:
+
+Slide [Number]: [Title]
+Slide Type: [Intro/Content/Data/Comparison/Conclusion]
+
+Relevant Insights:
+• [Primary insight from briefing that aligns with slide purpose]
+• [Supporting data or trend from visuals if applicable]
+• [Strategic implication or action item]
+
+Story Flow:
+- What question this slide answers
+- How it connects to overall narrative
+- Transition thought to next slide
+
+Focus on mapping insights that:
+1. Match the slide's purpose
+2. Advance the presentation story
+3. Drive toward action or decision
+
+Skip purely transitional slides. Prioritize substance over description.
+"""
+
+# 5. Prompt for "Generate Bullet Point Speaker Notes per Slide" Component
+def get_speaker_notes_prompt(verbosity_level="Standard", timing="30 Minutes", style="Informative"):
+    timing_instruction = get_timing_instructions(timing)
+    
+    if verbosity_level == "Brief":
+        return f"""
+Create ultra-concise speaker notes from {{Map Messages to Each Slide}}, {{Presentation Outline}}, and {{Visual Presentation Outline}}.
+
+{timing_instruction}
+
+For each slide, identify its purpose (introduction/data/comparison/conclusion) and adapt your notes accordingly:
+
+Title/Intro slides:
+• Core message only
+
+Data slides:
+• Key finding + implication
+
+Comparison slides:
+• Winner + reason
+
+Conclusion slides:
+• Main takeaway + action
+
+Style: {style} - adjust tone but maintain brevity.
+Maximum 3 bullets per slide. Focus on insights, not descriptions.
+"""
+    elif verbosity_level == "Detailed":
+        return f"""
+Generate comprehensive speaker notes from {{Map Messages to Each Slide}}, {{Presentation Outline}}, and {{Visual Presentation Outline}}.
+
+{timing_instruction}
+{get_verbosity_instructions('Detailed')}
+
+For each slide:
+
+Slide [Number]: [Exact Title from Presentation Outline]
+
+Analyze the slide type and purpose:
+- Title/Introduction: Set context, establish credibility, preview main points
+- Data/Visual: Explain context, highlight key findings, analyze trends/outliers, draw strategic implications
+- Comparison: Set up options, analyze strengths/weaknesses, provide clear recommendation with rationale
+- Conclusion: Synthesize journey, crystallize insights, provide clear next steps
+
+Structure your notes to tell a story:
+• Opening: Why this matters to the audience
+• Evidence: Data, examples, or comparisons that support your point
+• Analysis: What the evidence reveals (trends, outliers, implications)
+• So What: The strategic or practical implication
+• Transition: Natural bridge to the next slide's topic
+
+For data slides, go beyond description:
+- Identify the "aha" moment in the data
+- Explain what's surprising or confirmatory
+- Connect to broader business implications
+- Suggest what action this data demands
+
+Presentation Style: {style}
+Timing: {timing}
+
+Include speaking cues like (pause for emphasis), (ask audience), or (show with gesture) where impactful.
+"""
+    else:  # Standard
+        return f"""
+Generate clear, insightful speaker notes from {{Map Messages to Each Slide}}, {{Presentation Outline}}, and {{Visual Presentation Outline}}.
+
+{timing_instruction}
+{get_verbosity_instructions('Standard')}
+
+For each slide, recognize its type and adapt your approach:
+
+Slide [Number]: [Exact Title]
+
+INTRO/AGENDA SLIDES:
+• Set the stage - why this topic matters now
+• Preview the journey - what you'll discover
+• Create anticipation for key insights
+
+DATA/VISUAL SLIDES:
+• The story behind the numbers - what's really happening
+• The "so what" - why this data changes things
+• The implication - what we should do differently
+
+COMPARISON SLIDES:
+• Frame the choice - what we're evaluating
+• Key differentiator - the decisive factor
+• Clear recommendation - which path forward
+
+CONTENT SLIDES:
+• Main insight - the core message
+• Evidence - what proves this point
+• Application - how this changes our approach
+
+CONCLUSION SLIDES:
+• Synthesis - connecting the dots
+• Key takeaway - what to remember
+• Call to action - specific next steps
+
+Style: {style}
+- Formal: Data-driven, authoritative language
+- Informal: Conversational, relatable examples
+- Persuasive: Benefit-focused, action-oriented
+- Informative: Clear explanations, educational tone
+- Storytelling: Narrative arc, emotional connection
+
+Focus on insights and interpretation, not just description. Help the presenter tell a compelling story that drives action.
+"""
+
+# For backward compatibility, keep original prompt constants but update them
 OUTLINE_PROMPT = """
-Your job is to analyse the structure of {{Presentation Deck}} by examining each slide and identifying its title or creating a brief description when no title is present. For each slide, provide:
+Your job is to analyse the structure of the presentation by examining each slide and identifying its title or creating a brief description when no title is present. For each slide, provide:
  - Slide number
  - The exact title of the slide if one exists
  - A concise (10 - 20 word) description of the slide content if no title is present
 I am going to show you an example now.
 <example>
 Slide 1: Probiotics and botanicals: the next healthy food in Asia
-Slide 2: Today’s insights
+Slide 2: Today's insights
 Slide 3: introduction
 Slide 4: key data about Probiotics and botanicals
 Slide 5: Naturally functional ingredients hold vast potential in foods
@@ -32,17 +353,17 @@ Here are some Additional Guidelines to follow as you analyse the presentation:
  - Keep descriptions factual rather than interpretive
  - For slides with only images or data, describe the type of visual content
  - If slide numbers are included in the original, verify them but use your own sequential numbering in the output
-"""
 
-# 2. Prompt for "Visual Presentation Outline" Component (Model: Palmyra Vision)
+Presentation content:
+"""
 VISUAL_OUTLINE_PROMPT = """
-You are an AI with expertise in analysing presentation visuals and extracting actionable insights from the data presented. Your task is to thoroughly review the {{Presentation Deck}} and identify the core data and messages conveyed by all visuals, including charts, graphs, tables, and images. For each slide, provide the following:
+You are an AI with expertise in analysing presentation visuals and extracting actionable insights from the data presented. Your task is to thoroughly review the {{InputDocument}} and identify the core data and messages conveyed by all visuals, including charts, graphs, tables, and images. For each slide, provide the following:
  - Slide number
  - The exact title of the visual (charts, graphs, infographics, images, and tables) if one exists.
  - Type of Visual: Clearly state the type of visual (e.g., bar chart, line graph, pie chart, table, photograph, infographic).
  - What the visual represents: Provide a concise explanation of what the visual is depicting (e.g., "Market share of competitors in 2023," "Sales trends over the last five years," "Key features of the product").
  - Key Data Points and Messages Conveyed: This is crucial. Systematically identify and list the most important data points presented in the visual. For charts and graphs, mention specific values, trends, comparisons, and significant outliers, explaining why these are key. When identifying the highest or lowest values in a comparison, double-check each entity mentioned against the data presented to ensure only the correct entities are listed. For tables, highlight key figures and relationships, analysing their significance. For images and infographics, describe the core message or information being visually communicated, identifying the underlying insights. Be specific and quantify where possible.
- - Interpretation of the Visual's Message: This section is critical. Go beyond simply describing the visual. Analyse the visual by explaining its meaning in the context of the presentation and the briefing. Highlight key takeaways, conclusions from the data, and how it reinforces the overall narrative or supports the slide’s objective. Identify any trends, patterns, or relationships revealed by the visual and explain their significance. Consider the potential implications of the visual's message for the client's objectives or strategic decisions. Use analytical language to articulate your interpretation.
+ - Interpretation of the Visual's Message: This section is critical. Go beyond simply describing the visual. Analyse the visual by explaining its meaning in the context of the presentation and the briefing. Highlight key takeaways, conclusions from the data, and how it reinforces the overall narrative or supports the slide's objective. Identify any trends, patterns, or relationships revealed by the visual and explain their significance. Consider the potential implications of the visual's message for the client's objectives or strategic decisions. Use analytical language to articulate your interpretation.
 
 I am going to show you an example now.
 <example>
@@ -70,8 +391,8 @@ Slide 5: Top Three Biggest Consumer Health Categories in Asia Pacific Market Siz
 </example>
 Here are some special instructions to follow as you analyse the presentation:
  - Process the presentation sequentially, slide by slide.
- - If a visual’s title exists, extract it exactly as written.
- - If no clear visual’s title exists, create a brief descriptive phrase based on:
+ - If a visual's title exists, extract it exactly as written.
+ - If no clear visual's title exists, create a brief descriptive phrase based on:
 What the visual represents
 The key messages it conveys
 How it supports the overall narrative of the presentation
@@ -83,164 +404,6 @@ How it supports the overall narrative of the presentation
  - Remember that the focus of the 'exact title of the visual' is on titles specifically associated with charts, graphs, tables, and other data-driven visuals, not overarching slide titles.
  - Ensure that every slide has an 'Interpretation of the Visual's Message' section.
 """
-
-# 3. Prompt for "Key Information from the Briefing" Component (Model: Palmyra X 004)
-BRIEFING_INFO_PROMPT = """
-You are an experienced business consultant and strategic advisor, skilled at extracting key insights from complex briefings to support high-impact client presentations. Your role is to analyse the provided {{Briefing(s)}} to extract the most relevant insights for a client-facing presentation.
-Your Task is to carefully review the {{Briefing(s)}} and identify:
- - Key statistics: Critical data points (e.g., percentages, growth rates, market comparisons) that substantiate key messages.
- - Key findings: The most important takeaways that will immediately capture the client’s attention. If a key finding is illustrated with an example from a specific country, include this example in your output.
- - Market trends: Emerging patterns, industry shifts, and competitive dynamics that impact strategic decision-making. Pay attention to market trends that are particularly evident or significant in specific countries mentioned in the briefing and include these details.
- - Product benefits: Unique value propositions, advantages, or differentiators that should be highlighted. If the briefing mentions specific countries where a product benefit is particularly relevant or successful, include this information.
- - Competitive landscape: Insights into competitors’ strengths, weaknesses, and positioning.
- - Strategic recommendations: Practical, high-value actions based on the insights that can guide decision-making. If a strategic recommendation is supported by an example or data from a specific country in the briefing, include this supporting evidence.
-For the output format, present findings in structured bullet points for easy reference, ensuring insights are:
- - Concise and high-impact, eliminating unnecessary details and jargon unless critical for decision-making.
- - Data-driven, incorporating relevant statistics, comparisons, and trends. Where applicable, include specific country examples to illustrate these points.
- - Actionable, providing clear recommendations aligned with client priorities.
- - Engaging and client-focused, emphasising what matters most in a business context.
-Here are some special Instructions to follow as you extract key insights from the Briefings:
- - Prioritise insights that are most relevant to client decision-making and reinforce the overall narrative of the presentation.
- - Ensure clarity, impact, and avoid unnecessary complexity while maintaining depth where needed.
- - Highlight statistics, trends, or key takeaways that add credibility and persuasive power to the client-facing presentation. If these are exemplified by specific countries mentioned in the briefing, include those examples.
- - Eliminate unnecessary details or overly complex explanations.
- - Actively look for country-specific examples, data, or mentions within the briefing and incorporate them into your bullet points to provide local flavour and concrete illustrations of the key insights. For example, instead of just saying "The market is growing in Asia," if the briefing mentions "The market is showing significant growth in Vietnam, with a CAGR of...", include this specific detail.
-"""
-
-# 4. Prompt for "Mapping Key Messages to Each Slide" Component (Model: Palmyra X 004)
-MAP_MESSAGES_PROMPT = """
-You are an experienced Presentation Strategist with a proven track record of crafting compelling client presentations from complex information. Your expertise lies in identifying the core narrative and ensuring that every slide contributes effectively to the overall message. You understand the importance of clear, concise speaker notes that empower presenters to deliver with confidence.
-
-Your task is to strategically link the key insights extracted from the global briefing and the visual data presented in the presentation deck to the specific content of each slide. You will be provided with the outputs from the previous prompts {{Presentation Outline}},  {{Visual Presentation Outline}} , and the {{Key Information from the Briefing}}.
-
-For each slide in the presentation, your objective is to identify the most relevant bullet points from both the {Key Information from the Briefing} and the {Visual Presentation Outline} that directly support or elaborate on the slide's title/description and the overall message you aim to convey to the client.
-
-For each slide, the output for the mapping should be structured as follows:
-
-Slide [Slide Number]: [Slide Title or Description]
-
-Relevant Briefing Insights:
-
-[Key insight from the briefing that is most relevant to this slide]
-
-[Another relevant insight from the briefing]
-
-[A third relevant insight from the briefing (if applicable)]
-
-Relevant Visual Insights:
-
-[Key data point or message from the visual that is most relevant to this slide]
-
-[Another relevant data point or message from the visual (if applicable)]
-
-I am going to show you an example.
-
-<example>
-
-Slide 13: Promoting the Health Profile of Trendy Fermented Foods Benefits Probiotics
-
-Relevant Briefing Insights:
-
-Market Trends: Fermented foods, especially kimchi and fermented soybean sauces, are integral to Korean cuisine and are known for their health benefits like improved digestion and immune support. This has led to a growing trend of using probiotics in various food products, driven by companies like CJ Cheiljedang and Bibigo.
-
-Cultural Relevance: The cultural significance and health benefits of fermented foods in Korea are boosting the probiotics market, with innovations like reduced-sodium fermented products and the use of probiotics in non-dairy items, appealing to both local and export markets.
-
-The popularity of Korean fermented foods is expanding globally, with companies leveraging these traditional foods to introduce probiotic-rich products that cater to the growing demand for healthy and natural food options.
-
-Relevant Visual Insights:
-
-The Vietnamese market shows the largest projected Compound Annual Growth Rate (CAGR) for both retail value (close to 10%) and retail volume (around 6.5%) in the pickled products market from 2023-2028. The chart highlights that several Asia-Pacific markets (Vietnam, Thailand, Greater China, Singapore, South Korea) are expected to see significant growth in pickled product sales compared to the global average.
-
-An example of a successful product launch is provided.
-
-</example>
-
-Here are some special instructions to follow as you map the information:
-
- - Focus on Relevance: Prioritise briefing insights that directly explain, support, or provide context for the information presented on each slide as identified in {Presentation Outline} and {Visual Presentation Outline}.
-
- - Tell a Coherent Story: Ensure that the mapped information contributes to a logical and persuasive narrative flow throughout the presentation. Each slide should build upon the previous one.
-
- - Highlight Key Takeaways: Prioritise briefing insights and visual data that represent the most important takeaways for the client.
-
- - Support Claims with Evidence: Use the data points from the visuals to substantiate the strategic recommendations and key findings from the briefing.
-
- - Be Concise and Impactful: Select the most impactful bullet points that convey the essential information without unnecessary jargon or detail. Remember, these will form the basis of speaker notes for a potentially busy presenter.
-
- - Identify Opportunities for Emphasis: Consider which briefing points or visual insights would benefit from being highlighted or further explained during the presentation.
-
-Handle Transitions Thoughtfully: While the mapping is per slide, think about how the information on one slide might naturally lead to the next.
-
- - Leverage Visual Insights: Pay close attention to the "Key Data Points and Messages Conveyed" and "Interpretation of the Visual's Message" from {Visual Presentation Outline} . These insights should guide you in selecting the most pertinent briefing information to map to each visual.
-
- - Handle Slides with No Direct Briefing Link: If a slide primarily focuses on introductory or concluding remarks and doesn't directly relate to specific briefing points, you can indicate this by stating "No direct briefing insights applicable to this slide."
-"""
-
-# 5. Prompt for "Generate Bullet Point Speaker Notes per Slide" Component (Model: Palmyra X 004)
-SPEAKER_NOTES_PROMPT = """
-You are an expert in crafting structured and engaging presentation content, with a particular focus on creating intuitive and confidence-boosting speaker notes for individuals who may not have been involved in creating the briefing or the presentation. Your task is to transform the mapped information from the previous step into refined speaker notes that are clear, concise, and empower the presenter to deliver a compelling and informative presentation. The goal is to make the presentation feel seamless, connected, and easy for both the presenter and the audience to understand. The speaker notes should provide insightful analysis, not just descriptions of the content.
-
-Here are some special Instructions to follow as you generate bulleted point speaker notes per slide:
-
-1. Improve upon the bullet points generated in {{Map Messages to Each Slide}} by making them more descriptive, analytical and presenter-focused. Ensure each bullet point provides enough context for someone unfamiliar with the source material to understand and articulate the key message. Aim for clarity and conciseness.
-
-2. For each set of speaker notes generated, use the exact slide title (or the concise description created if no title exists) as determined and outputted in {{Presentation Outline}}. This ensures consistency and accurate referencing throughout the final output.
-
-3. Structure the bullet points within each slide to guide the speaker naturally through the content. Include potential transitional phrases or cues that the presenter can use to smoothly move from one point to the next and connect the current slide to the previous and subsequent ones (e.g., "Building on this...", "Now, let's look at...", "This leads us to...").
-
-4. If a slide contains charts, graphs, infographics, images, or tables, as analysed in {{Visual Presentation Outline}}, include at least one bullet point that clearly describes the visual and, more importantly, analyses the key data points and messages, explaining their significance and what they imply for the client. Specify the type of visual, explain what it represents, highlight key data points and messages, interpret its significance in the context of the briefing and the overall presentation narrative, and clarify how it supports the overall narrative and the slide's objective. Be specific, quantify where possible, and ensure the explanation is clear without assuming prior knowledge of the data.
-
-5. For each slide, aim to have 4-5 bullet points that clearly and concisely communicate the core insights and their analytical interpretation. Use structured phrasing that is easy for the presenter to deliver and for the audience to digest. Prioritise the most important information based on the mapping, focusing on the 'so what' for the client.
-
-6. Focus on Presenter Confidence: Write the speaker notes in a way that would build confidence in someone presenting this information for the first time. Use clear, simple language, avoid jargon unless absolutely necessary and clearly defined, and provide sufficient context within the notes themselves by explaining the underlying logic and implications.
-
-7. Use Action-Oriented Language: Where appropriate, use action-oriented verbs to guide the speaker on what to emphasise or how to present the information. For example, instead of "Market growth is significant," use "Highlight the significant market growth and its implications for our clients."
-
-8. Include Optional Presenter Prompts: Consider adding optional elements within the bullet points, enclosed in parentheses or a different formatting style, that act as prompts for the presenter. These could include suggestions like:
-
-"(Pause here to take questions)"
-
-"(Transition to the next slide by saying...)"
-
-"(Emphasize the key statistic on this slide)"
-
-"(Share a brief anecdote related to this point)"
-
-9. Consider Presentation Style: Adjust the language to the {{Presentation Style}} tone, and level of detail in the speaker notes accordingly.
-
-10. Consider Presentation Timing: Adjust the level of detail and the number of bullet points per slide to help the presenter stay within the allocated {{Timing}}. For shorter presentations, focus on the most critical information and keep bullet points concise. For longer presentations, more detail and potentially more bullet points might be appropriate, but ensure the content remains engaging and within the time limit.
-
-The final output for each slide should follow this format:
-
-Slide [Slide Number]: [Slide Title]
-
-(Bullet 1) (What is the main message of the slide?) Analyse the main message of the slide, ensuring to include relevant insights from the briefing document and explain their significance.
-
-(Bullet 2) (Why is it Important?) Explain why this slide is important for the overall presentation, focusing on the analytical takeaways for them.
-
-(Bullet 3) (What does the visual tell us?) If the slide contains a graph or visual, describe it, including the type of visual and what it shows, and provide an analytical interpretation of the key data and its relevance to the slide's objective and the overall narrative.
-
-(Bullet 4) (Why is the visual significant?) Explain why the information presented in the graph or visual is significant and how it supports the slide's main message, ensuring to highlight the analytical conclusions that can be drawn.
-
-(Bullet 5 - Optional) (Transition to the next slide.) Provide a suggestion for smoothly transitioning to the next slide, perhaps by linking the analytical insights from the current slide to the topic of the next.
-
-Continue for all slides, ensuring consistency in flow and clarity.
-
-I am going to show you an example:
-
-<example>
-
-Slide 5: Naturally functional ingredients hold vast potential in foods
-
-(What is the main message of the slide?) “The main message is that naturally functional ingredients, particularly herbal and traditional ones, represent a significant and growing market opportunity within the Asian Pacific food sector. The slide highlights the substantial market size and comparable growth rates of these ingredients compared to modern over-the-counter medications, despite urbanization and societal modernization. This suggests a strong and enduring consumer preference for these ingredients, driven by cultural embeddedness and a growing interest in food as medicine.”
-
-(Why is it Important?) “This slide is crucial for the overall presentation because it presents a compelling market opportunity. It sets the stage by showcasing the substantial market size and significant growth potential of naturally functional ingredients in Asia Pacific. This is a key analytical takeaway, demonstrating a viable and expanding market segment for the products or services being discussed in the presentation. The comparison to modern medications underscores the resilience of this market, even amidst shifts in lifestyle and healthcare.”
-
-(What does the visual tell us?) “The bar chart illustrates that "Herbal/Traditional Products" constitute a substantial market segment in Asia Pacific's consumer health sector, holding a similar market size and Compound Annual Growth Rate (CAGR) (2023-2028) compared to Over the Counter (OTC) medications.”
-
-(Why is the visual significant?) “The data visually demonstrates the substantial market size and robust growth projected for Herbal/Traditional Products. The comparison with OTC medications and Vitamins and Dietary Supplements provides context, revealing that Herbal/Traditional Products are not only a sizeable market but also possess strong growth potential, competitive with other established segments. The high CAGR for Herbal/Traditional Products validates the claim of "vast potential" in the slide's main text and is a key analytical conclusion, highlighting an attractive market segment for investment or strategy development.”
-
-(Transition to the next slide.) "Now, let's look at the growing awareness of the benefits of 'super ingredients'."
-
-</example>
-"""
+BRIEFING_INFO_PROMPT = get_briefing_info_prompt()
+MAP_MESSAGES_PROMPT = get_map_messages_prompt()
+SPEAKER_NOTES_PROMPT = get_speaker_notes_prompt()
